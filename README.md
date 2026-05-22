@@ -38,12 +38,20 @@ An autonomous, agent-driven job application tracking system (ATS) and pipeline a
 ### 1. Configuration (`.env`)
 Create a `.env` file in the root directory based on `.env.example`:
 ```env
-OPENAI_API_KEY=your-openai-api-key
-DATABASE_URL=postgresql://postgres:admin@db:5432/job_search
+# Credentials Vault
+OPENAI_API_KEY=sk-proj-your-openai-api-key
+LINKEDIN_COOKIES='[{"name": "li_at", "value": "your_cookie_here", "domain": ".linkedin.com"}]'
+
+# Database Configuration
+DB_USER=postgres
+DB_PASSWORD=admin
+DB_NAME=job_search
+DB_PORT=5432
+REDIS_PORT=6379
 ```
 
 ### 2. Run with Docker Compose (Recommended)
-Build and spin up the complete system (API Server, Celery Worker, PostgreSQL Database, Redis Broker, Prometheus, and Grafana):
+Build and spin up the complete system (API Server, Celery Worker, PostgreSQL Database, Redis Broker, Prometheus, Grafana, and Frontend UI Dashboard):
 ```bash
 docker-compose up --build
 ```

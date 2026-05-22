@@ -66,6 +66,18 @@ services:
     depends_on:
       - prometheus
 
+  # Frontend UI Dashboard
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    container_name: auto_apply_ui
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
 volumes:
   prometheus_data:
   grafana_data:
+
