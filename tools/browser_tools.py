@@ -1,4 +1,4 @@
-from crewai_tools import BaseTool
+from crewai.tools import BaseTool
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 import time

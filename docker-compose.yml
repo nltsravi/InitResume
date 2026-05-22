@@ -6,6 +6,11 @@ services:
     command: uvicorn api.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LINKEDIN_COOKIES=${LINKEDIN_COOKIES}
+      - DATABASE_URL=postgresql://postgres:admin@db:5432/job_search
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - db
       - redis
@@ -15,6 +20,9 @@ services:
     command: celery -A core.tasks worker --loglevel=info
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LINKEDIN_COOKIES=${LINKEDIN_COOKIES}
+      - DATABASE_URL=postgresql://postgres:admin@db:5432/job_search
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - db
       - redis
@@ -22,7 +30,9 @@ services:
   db:
     image: postgres:15
     environment:
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: admin
+      POSTGRES_DB: job_search
 
   redis:
     image: redis:alpine

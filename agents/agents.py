@@ -1,12 +1,11 @@
-from crewai import Agent
-from langchain_openai import ChatOpenAI
+from crewai import Agent, LLM
 from tools.browser_tools import BrowserTools
 
 class ApplicationAgents:
     def __init__(self):
         # Configure separate LLM tiers based on reasoning requirements
-        self.llm_mini = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
-        self.llm_reasoning = ChatOpenAI(model="gpt-4o", temperature=0.2)
+        self.llm_mini = LLM(model="gpt-4o-mini", temperature=0.2)
+        self.llm_reasoning = LLM(model="gpt-4o", temperature=0.2)
 
     def job_researcher_agent(self) -> Agent:
         return Agent(

@@ -1,10 +1,9 @@
-from crewai import Agent
-from langchain_openai import ChatOpenAI
+from crewai import Agent, LLM
 from tools.browser_tools import PlaywrightApplyTool, LinkedInNetworkTool, CompanyBlogScraperTool
 
 # Cost Optimization: Setup separate LLM tiers based on reasoning depth requirements
-llm_mini = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
-llm_reasoning = ChatOpenAI(model="gpt-4o", temperature=0.2)
+llm_mini = LLM(model="gpt-4o-mini", temperature=0.2)
+llm_reasoning = LLM(model="gpt-4o", temperature=0.2)
 
 job_search_agent = Agent(
     role="Principal Job Sourcing Specialist",

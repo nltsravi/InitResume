@@ -1,3 +1,6 @@
+# NOTE: This Dockerfile must be built with the project root directory as the context.
+# Build command: docker build -t initresume-api -f api/Dockerfile .
+#
 FROM python:3.11-slim
 
 # Prevent writing pyc files and buffering stdout/stderr
