@@ -91,10 +91,14 @@ export default function KanbanDashboard() {
     }
   ]);
 
+  const BACKEND_URL = 'http://localhost:8000';
+
   const [selectedJob, setSelectedJob] = useState<JobCard | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [answerInput, setAnswerInput] = useState('');
   const [triggeringCrew, setTriggeringCrew] = useState(false);
+  const [searchingLinkedIn, setSearchingLinkedIn] = useState(false);
+  const [searchResults, setSearchResults] = useState<JobCard[]>([]);
   const [searchUrl, setSearchUrl] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
 
@@ -107,6 +111,24 @@ export default function KanbanDashboard() {
     'Applied',
     'Rejected'
   ];
+
+  const refreshApplications = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/v1/applications`);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          setJobs(data);
+        }
+      }
+    } catch (err) {
+      console.error("Error fetching applications:", err);
+    }
+  };
+
+  useEffect(() => {
+    refreshApplications();
+  }, []);
 
   const getStatusColor = (status: JobCard['status']) => {
     switch(status) {
@@ -130,47 +152,112 @@ export default function KanbanDashboard() {
     setSelectedJob(null);
   };
 
-  const handleSubmitAnswer = (e: React.FormEvent) => {
+  const handleSubmitAnswer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedJob) return;
 
-    // Update job state locally, transitioning it from 'Pending Approval' to 'Applied'
-    setJobs(prevJobs => 
-      prevJobs.map(job => 
-        job.id === selectedJob.id 
-          ? { ...job, status: 'Applied', customAnswer: answerInput } 
-          : job
-      )
-    );
-
-    setStatusMessage(`Answer submitted! Resuming application automation for ${selectedJob.company}...`);
+    try {
+      setStatusMessage(`Submitting custom answer for ${selectedJob.company}...`);
+      const res = await fetch(`${BACKEND_URL}/api/v1/applications/${selectedJob.id}/submit-answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answer: answerInput })
+      });
+      if (res.ok) {
+        setStatusMessage(`Answer submitted! Resuming application automation for ${selectedJob.company}...`);
+        refreshApplications();
+      } else {
+        setStatusMessage('Failed to submit answer.');
+      }
+    } catch (err) {
+      console.error(err);
+      setStatusMessage('Error submitting answer to server.');
+    }
     setTimeout(() => setStatusMessage(''), 4000);
     handleCloseApproval();
   };
 
-  const triggerSearchCrew = (e: React.FormEvent) => {
+  const triggerSearchCrew = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchUrl) return;
 
     setTriggeringCrew(true);
     setStatusMessage('Kicking off CrewAI Application Flow...');
     
-    // Add job to "Found" column
-    const newJob: JobCard = {
-      id: (jobs.length + 1).toString(),
-      title: 'Scraped Job Role',
-      company: 'Target Company',
-      location: 'Remote',
-      url: searchUrl,
-      status: 'Found'
-    };
-
-    setTimeout(() => {
-      setJobs(prev => [...prev, newJob]);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/v1/trigger-apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: searchUrl })
+      });
+      if (res.ok) {
+        setStatusMessage('Application workflow initiated successfully!');
+        setSearchUrl('');
+        refreshApplications();
+      } else {
+        setStatusMessage('Failed to initiate application flow.');
+      }
+    } catch (err) {
+      console.error(err);
+      setStatusMessage('Error connecting to backend API.');
+    } finally {
       setTriggeringCrew(false);
-      setSearchUrl('');
-      setStatusMessage('Automation pipeline completed scraping and ATS evaluation.');
-    }, 2000);
+      setTimeout(() => setStatusMessage(''), 4000);
+    }
+  };
+
+  const handleLinkedInSearch = async () => {
+    setSearchingLinkedIn(true);
+    setStatusMessage('Loading resume.pdf and querying LinkedIn for jobs...');
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/v1/search-linkedin-jobs`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === 'success' && Array.isArray(data.jobs)) {
+          setSearchResults(data.jobs);
+          setStatusMessage(`Found ${data.jobs.length} matching jobs on LinkedIn based on resume!`);
+        } else {
+          setStatusMessage('Failed to parse search results.');
+        }
+      } else {
+        setStatusMessage('Failed to retrieve LinkedIn job matches.');
+      }
+    } catch (err) {
+      console.error(err);
+      setStatusMessage('Error contacting backend server.');
+    } finally {
+      setSearchingLinkedIn(false);
+      setTimeout(() => setStatusMessage(''), 4000);
+    }
+  };
+
+  const handleProceedAndApply = async (job: JobCard) => {
+    setStatusMessage(`Triggering apply flow for ${job.title} at ${job.company}...`);
+    try {
+      // Optimistically add to Kanban board
+      if (!jobs.some(j => j.url === job.url)) {
+        setJobs(prev => [...prev, { ...job, status: 'Found' }]);
+      }
+      
+      const res = await fetch(`${BACKEND_URL}/api/v1/trigger-apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: job.url })
+      });
+      if (res.ok) {
+        setStatusMessage(`Successfully initiated apply flow!`);
+        setSearchResults(prev => prev.filter(j => j.url !== job.url));
+        refreshApplications();
+      } else {
+        setStatusMessage('Failed to trigger apply flow.');
+      }
+    } catch (err) {
+      console.error(err);
+      setStatusMessage('Error connecting to backend.');
+    }
+    setTimeout(() => setStatusMessage(''), 4000);
   };
 
   const updateJobStatus = (id: string, newStatus: JobCard['status']) => {
@@ -206,34 +293,86 @@ export default function KanbanDashboard() {
       </header>
 
       {/* Control Panel / Scraping trigger */}
-      <div className="max-w-7xl w-full mx-auto px-6 pt-6">
+      <div className="max-w-7xl w-full mx-auto px-6 pt-6 space-y-4">
         <div className="bg-slate-900/40 border border-slate-850 rounded-2xl p-5 backdrop-blur-sm flex flex-col md:flex-row items-center justify-between gap-4">
-          <div className="flex-1 w-full">
+          <div className="flex-1 w-full col-span-2">
             <h3 className="text-sm font-semibold text-slate-300 mb-1">Trigger Autonomous Apply Flow</h3>
             <p className="text-xs text-slate-500">Insert any Lever/Greenhouse posting URL to launch custom tailoring and apply agents.</p>
           </div>
-          <form onSubmit={triggerSearchCrew} className="flex w-full md:w-auto items-center gap-2 flex-1">
-            <input 
-              type="url"
-              required
-              value={searchUrl}
-              onChange={(e) => setSearchUrl(e.target.value)}
-              placeholder="https://jobs.lever.co/company/role"
-              className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 transition-all"
-            />
+          <div className="flex w-full md:w-auto items-center gap-2 flex-1 flex-wrap md:flex-nowrap">
+            <form onSubmit={triggerSearchCrew} className="flex flex-1 items-center gap-2">
+              <input 
+                type="url"
+                required
+                value={searchUrl}
+                onChange={(e) => setSearchUrl(e.target.value)}
+                placeholder="https://jobs.lever.co/company/role"
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 transition-all min-w-[200px]"
+              />
+              <button
+                type="submit"
+                disabled={triggeringCrew}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm px-5 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 disabled:opacity-50 shadow-lg shadow-indigo-600/10"
+              >
+                {triggeringCrew ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
+                Launch
+              </button>
+            </form>
             <button
-              type="submit"
-              disabled={triggeringCrew}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm px-5 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 disabled:opacity-50"
+              type="button"
+              onClick={handleLinkedInSearch}
+              disabled={searchingLinkedIn}
+              className="bg-sky-600 hover:bg-sky-500 text-white font-medium text-sm px-5 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 disabled:opacity-50 shadow-lg shadow-sky-600/10"
             >
-              {triggeringCrew ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
-              Launch
+              {searchingLinkedIn ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+              Search LinkedIn (Resume)
             </button>
-          </form>
+          </div>
         </div>
 
+        {/* LinkedIn Search Results Panel */}
+        {searchResults.length > 0 && (
+          <div className="p-5 rounded-2xl bg-slate-900/60 border border-slate-800/80 backdrop-blur-sm animate-in fade-in slide-in-from-top-4 duration-300">
+            <div className="flex items-center justify-between mb-4">
+              <h4 className="text-sm font-semibold text-sky-400 flex items-center gap-2">
+                <Search className="w-4 h-4" />
+                LinkedIn Job Matches (Extracted from resume.pdf)
+              </h4>
+              <button 
+                onClick={() => setSearchResults([])}
+                className="text-slate-400 hover:text-slate-200 text-xs flex items-center gap-1 bg-slate-800/60 px-2.5 py-1 rounded-lg border border-slate-700/50"
+              >
+                Clear Results <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {searchResults.map((job) => (
+                <div key={job.url} className="bg-slate-950 border border-slate-850 p-4 rounded-xl flex flex-col justify-between hover:border-slate-700 transition-all">
+                  <div>
+                    <div className="flex justify-between items-start gap-1">
+                      <h5 className="font-bold text-xs text-slate-200 line-clamp-1">{job.title}</h5>
+                      <span className="text-[10px] bg-emerald-500/10 text-emerald-400 font-bold px-1.5 py-0.5 rounded">
+                        {job.matchScore}% Fit
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-0.5">{job.company}</p>
+                    <p className="text-[10px] text-slate-500 mt-2 line-clamp-2 italic">{job.salary || "Salary not listed"}</p>
+                  </div>
+                  <button
+                    onClick={() => handleProceedAndApply(job)}
+                    className="mt-3 w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[10px] py-2 rounded-lg transition-all flex items-center justify-center gap-1"
+                  >
+                    <ArrowRight className="w-3 h-3" />
+                    Proceed & Apply
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {statusMessage && (
-          <div className="mt-4 p-3.5 rounded-xl bg-indigo-950/20 border border-indigo-900/50 text-xs flex gap-2.5 text-indigo-300 items-center">
+          <div className="p-3.5 rounded-xl bg-indigo-950/20 border border-indigo-900/50 text-xs flex gap-2.5 text-indigo-300 items-center">
             <AlertCircle className="w-4 h-4 text-indigo-400 shrink-0" />
             <span>{statusMessage}</span>
           </div>
@@ -285,6 +424,56 @@ export default function KanbanDashboard() {
                         <p className="text-[10px] text-slate-500 mt-2 font-medium bg-slate-900/40 w-fit px-1.5 py-0.5 rounded">
                           {job.salary}
                         </p>
+                      )}
+
+                      {/* Applied State Actions */}
+                      {job.status === 'Applied' && (
+                        <div className="mt-3 grid grid-cols-2 gap-2 border-t border-slate-900/60 pt-2.5">
+                          <button
+                            onClick={async () => {
+                              setStatusMessage(`Generating referral outreach for ${job.company}...`);
+                              try {
+                                const res = await fetch(`${BACKEND_URL}/api/v1/applications/${job.id}/referrals`, { method: 'POST' });
+                                if (res.ok) {
+                                  const data = await res.json();
+                                  setStatusMessage(`Referral draft generated: ${data.referral.referral_draft}`);
+                                } else {
+                                  setStatusMessage('Failed to generate referral draft.');
+                                }
+                              } catch (err) {
+                                setStatusMessage('Error generating referral draft.');
+                              }
+                            }}
+                            className="bg-indigo-950/40 hover:bg-indigo-900/40 text-[9px] text-indigo-400 border border-indigo-900/30 font-medium py-1.5 rounded flex items-center justify-center gap-1 transition-all"
+                          >
+                            <Users className="w-3 h-3" />
+                            Get Referral
+                          </button>
+                          <button
+                            onClick={async () => {
+                              setStatusMessage(`Generating interview prep sheet for ${job.company}...`);
+                              try {
+                                const res = await fetch(`${BACKEND_URL}/api/v1/applications/${job.id}/schedule-interview`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ scheduled_at: new Date().toISOString() })
+                                });
+                                if (res.ok) {
+                                  const data = await res.json();
+                                  setStatusMessage(`Interview Prep sheet generated! Access content at API endpoint.`);
+                                } else {
+                                  setStatusMessage('Failed to generate interview prep.');
+                                }
+                              } catch (err) {
+                                setStatusMessage('Error generating interview prep.');
+                              }
+                            }}
+                            className="bg-purple-950/40 hover:bg-purple-900/40 text-[9px] text-purple-400 border border-purple-900/30 font-medium py-1.5 rounded flex items-center justify-center gap-1 transition-all"
+                          >
+                            <FileText className="w-3 h-3" />
+                            Interview Prep
+                          </button>
+                        </div>
                       )}
 
                       {/* Conditional Render Actions */}

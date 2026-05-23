@@ -160,13 +160,28 @@ class BrowserTools:
         """
         Mock implementation of job searching.
         """
+        print(f"[BrowserTools] Searching LinkedIn for jobs with keywords='{keywords}', location='{location}'...")
         return [
             {
-                "title": "Principal Software Engineer",
-                "company": "Tech Corp",
-                "url": "https://example.com/job1",
-                "jd_text": "We are looking for a Principal Software Engineer with 18+ years of experience in Python, FastAPI, and Playwright.",
-                "salary": "$200,000 - $250,000"
+                "title": "Principal Software Engineer (Platform)",
+                "company": "Stripe",
+                "url": "https://jobs.lever.co/stripe/principal-eng",
+                "jd_text": "We are looking for a Principal Software Engineer to lead platform reliability. Needs 18+ years experience, expert in Python, FastAPI, and automation frameworks.",
+                "salary": "$220,000 - $260,000"
+            },
+            {
+                "title": "Staff Backend Architect",
+                "company": "Netflix",
+                "url": "https://jobs.greenhouse.io/netflix/staff-architect",
+                "jd_text": "Looking for a Staff Backend Architect to design distributed streaming microservices. Strong Python, schema design, and asynchronous system skills required.",
+                "salary": "$230,000 - $280,000"
+            },
+            {
+                "title": "Lead Infrastructure Engineer",
+                "company": "Google",
+                "url": "https://jobs.lever.co/google/lead-platform",
+                "jd_text": "Join our platform infrastructure team. Focus on developer tooling, API design, and automation testing. Expertise in FastAPI, PostgreSQL, and Playwright is a plus.",
+                "salary": "$210,000 - $250,000"
             }
         ]
 

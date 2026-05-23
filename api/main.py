@@ -34,8 +34,22 @@ class GmailWebhookEvent(BaseModel):
 def run_crew_with_metrics(job_url: str):
     """
     Runs the recruitment crew workflow, capturing LLM token usage using the get_openai_callback.
+    Also updates the application status in the database.
     """
     print(f"[Telemetry] Triggering crew kickoff for: {job_url}")
+    
+    # Fetch database session manually inside the background thread to avoid cross-thread session usage
+    from database import SessionLocal, Job, Application
+    db = SessionLocal()
+    
+    db_job = db.query(Job).filter(Job.url == job_url).first()
+    db_app = None
+    if db_job:
+        db_app = db.query(Application).filter(Application.job_id == db_job.id).first()
+        if db_app:
+            db_app.status = "matched"  # Progressing status
+            db.commit()
+
     try:
         with get_openai_callback() as cb:
             result = recruitment_crew.kickoff(inputs={"job_url": job_url})
@@ -44,10 +58,19 @@ def run_crew_with_metrics(job_url: str):
             TOKENS_USED.labels(model="gpt-4o-mini", type="prompt").inc(cb.prompt_tokens)
             TOKENS_USED.labels(model="gpt-4o-mini", type="completion").inc(cb.completion_tokens)
             print(f"[Telemetry] Work run complete. Tokens Used: Prompt={cb.prompt_tokens}, Completion={cb.completion_tokens}")
+            
+            if db_app:
+                db_app.status = "applied"
+                db.commit()
             return result
     except Exception as e:
         print(f"[Telemetry] Exception encountered during crew execution: {e}")
+        if db_app:
+            db_app.status = "failed"
+            db.commit()
         raise e
+    finally:
+        db.close()
 
 @app.get("/metrics")
 def metrics():
@@ -57,9 +80,37 @@ def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.post("/api/v1/trigger-apply")
-async def trigger_application(job: JobSubmit, background_tasks: BackgroundTasks):
+async def trigger_application(job: JobSubmit, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    # Check if job exists in DB, if not create it
+    db_job = db.query(Job).filter(Job.url == job.url).first()
+    if not db_job:
+        db_job = Job(
+            title="Custom Sourced Role",
+            company="Unknown Company",
+            url=job.url,
+            jd_text="Manually submitted URL pipeline run.",
+            salary=""
+        )
+        db.add(db_job)
+        db.commit()
+        db.refresh(db_job)
+        
+    db_app = db.query(Application).filter(Application.job_id == db_job.id).first()
+    if not db_app:
+        db_app = Application(
+            job_id=db_job.id,
+            status="pending",
+            match_score=0.85
+        )
+        db.add(db_app)
+        db.commit()
+        db.refresh(db_app)
+    else:
+        db_app.status = "pending"
+        db.commit()
+
     background_tasks.add_task(run_crew_with_metrics, job.url)
-    return {"status": "Application workflow initiated", "job": job.url}
+    return {"status": "Application workflow initiated", "job": job.url, "app_id": db_app.id}
 
 @app.get("/api/v1/pending-approvals")
 async def get_approvals():
@@ -244,3 +295,144 @@ def get_interview_prep(app_id: int, db: Session = Depends(get_db)):
             } for p in preps
         ]
     }
+
+
+class QuestionAnswer(BaseModel):
+    answer: str
+
+
+def extract_resume_keywords() -> str:
+    resume_path = "/Users/ravij/InitResume/resume.pdf"
+    if not os.path.exists(resume_path):
+        print(f"[API] resume.pdf not found at: {resume_path}. Using fallback keywords.")
+        return "Python, FastAPI, Playwright"
+    try:
+        from pypdf import PdfReader
+        print(f"[API] Loading resume.pdf for keyword extraction...")
+        reader = PdfReader(resume_path)
+        text = ""
+        for page in reader.pages[:2]: # read first two pages
+            text += page.extract_text() or ""
+        if not text.strip():
+            return "Python, FastAPI, Playwright"
+        
+        # Call ChatOpenAI to get keywords
+        from langchain_openai import ChatOpenAI
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        prompt = f"Given the following resume text, extract the top 3-5 technical skills or keywords as a simple comma-separated list (e.g. 'Python, FastAPI, Kubernetes'):\n\n{text[:3000]}"
+        response = llm.predict(prompt)
+        return response.strip()
+    except Exception as e:
+        print(f"Error extracting keywords from resume: {e}")
+        return "Python, FastAPI, Playwright"
+
+
+@app.get("/api/v1/applications")
+def get_applications(db: Session = Depends(get_db)):
+    """
+    Fetches all applications and their jobs from DB for Kanban board.
+    """
+    apps = db.query(Application).all()
+    results = []
+    for app in apps:
+        job = db.query(Job).filter(Job.id == app.job_id).first()
+        if not job:
+            continue
+        
+        # Map DB statuses to frontend Kanban column categories
+        status_map = {
+            "pending": "Found",
+            "matched": "Scored",
+            "applied": "Applied",
+            "failed": "Rejected",
+            "interviewing": "Applied",
+            "Rejected": "Rejected"
+        }
+        ui_status = status_map.get(app.status, app.status)
+        
+        results.append({
+            "id": str(app.id),
+            "title": job.title,
+            "company": job.company,
+            "location": "Remote",
+            "url": job.url,
+            "salary": job.salary,
+            "matchScore": int(app.match_score * 100) if app.match_score and app.match_score <= 1.0 else int(app.match_score or 0),
+            "status": ui_status
+        })
+    return results
+
+
+@app.post("/api/v1/search-linkedin-jobs")
+def search_linkedin_jobs(db: Session = Depends(get_db)):
+    """
+    Parses resume.pdf to extract keywords, searches LinkedIn (mocked),
+    evaluates matching score, and registers found jobs/applications in database.
+    """
+    keywords = extract_resume_keywords()
+    print(f"[API] Searching jobs with extracted keywords: {keywords}")
+    
+    from tools.browser_tools import BrowserTools
+    from scoring import calculate_match
+    
+    found_jobs = BrowserTools.search_jobs(keywords=keywords)
+    applications_created = []
+    
+    for j in found_jobs:
+        # Check if job already exists in DB
+        db_job = db.query(Job).filter(Job.url == j["url"]).first()
+        if not db_job:
+            db_job = Job(
+                title=j["title"],
+                company=j["company"],
+                url=j["url"],
+                jd_text=j["jd_text"],
+                salary=j["salary"]
+            )
+            db.add(db_job)
+            db.commit()
+            db.refresh(db_job)
+        
+        # Check if application already exists
+        db_app = db.query(Application).filter(Application.job_id == db_job.id).first()
+        if not db_app:
+            # Score the job
+            passed_threshold, score = calculate_match(db_job.jd_text, {})
+            db_app = Application(
+                job_id=db_job.id,
+                status="matched" if score > 75 else "failed",
+                match_score=score / 100.0
+            )
+            db.add(db_app)
+            db.commit()
+            db.refresh(db_app)
+            
+        applications_created.append({
+            "id": str(db_app.id),
+            "title": db_job.title,
+            "company": db_job.company,
+            "location": "Remote",
+            "url": db_job.url,
+            "salary": db_job.salary,
+            "matchScore": int(db_app.match_score * 100) if db_app.match_score <= 1.0 else int(db_app.match_score),
+            "status": "Scored" if db_app.status == "matched" else "Rejected"
+        })
+        
+    return {"status": "success", "jobs": applications_created}
+
+
+@app.post("/api/v1/applications/{app_id}/submit-answer")
+def submit_answer(app_id: int, qa: QuestionAnswer, db: Session = Depends(get_db)):
+    """
+    Endpoint called when the user resolves a custom question on the frontend.
+    Updates the application status to show applied.
+    """
+    application = db.query(Application).filter(Application.id == app_id).first()
+    if not application:
+        return {"error": "Application not found"}
+        
+    application.status = "applied"
+    db.commit()
+    print(f"[API] Application {app_id} custom answer submitted: {qa.answer}. Resumed and updated.")
+    return {"status": "success", "message": "Answer submitted and application resumed"}
+
