@@ -31,6 +31,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi.responses import JSONResponse
+from fastapi import Request
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    print(f"[API Error Handler] Unhandled Exception: {exc}")
+    import traceback
+    traceback.print_exc()
+    response = JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error", "message": str(exc)},
+    )
+    # Manually attach CORS headers to error response so the browser doesn't mask it
+    response.headers["Access-Control-Allow-Origin"] = request.headers.get("origin", "http://localhost:3000")
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
 class JobSubmit(BaseModel):
     url: str
 
