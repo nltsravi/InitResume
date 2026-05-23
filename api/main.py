@@ -12,7 +12,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from main import recruitment_crew
-from database import get_db, Job, Application, Referral, InterviewPrep
+from database import Base, engine, get_db, Job, Application, Referral, InterviewPrep
 from core.learning_agent import LearningAgent
 from core.metrics import TOKENS_USED
 from crewai import Crew
@@ -21,6 +21,9 @@ from recruitment_crew import network_mapping_agent, interview_prep_agent
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="CrewAI Auto-Apply Core")
+
+# Create database tables automatically at startup
+Base.metadata.create_all(bind=engine)
 
 # Enable CORS for frontend browser requests
 app.add_middleware(
