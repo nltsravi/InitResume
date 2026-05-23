@@ -18,8 +18,18 @@ from core.metrics import TOKENS_USED
 from crewai import Crew
 from document_tasks import network_mapping_task, interview_prep_task
 from recruitment_crew import network_mapping_agent, interview_prep_agent
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="CrewAI Auto-Apply Core")
+
+# Enable CORS for frontend browser requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class JobSubmit(BaseModel):
     url: str
