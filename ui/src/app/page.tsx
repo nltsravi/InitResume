@@ -354,9 +354,11 @@ export default function KanbanDashboard() {
         </div>
       </header>
 
-      {/* Control Panel: 2-Column Grid */}
-      <div className="max-w-7xl w-full mx-auto px-6 pt-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+      {/* Control Panel Section Wrapper */}
+      <div className="max-w-7xl w-full mx-auto px-6 pt-6 space-y-6">
         
+        {/* Control Panel: 2-Column Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Master Resume Profile (5 cols) */}
         <div className="lg:col-span-5 bg-slate-900/40 border border-slate-850 rounded-2xl p-5 backdrop-blur-sm flex flex-col justify-between space-y-4">
           <div>
