@@ -1,10 +1,14 @@
 import os
+import getpass
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+# Default to current OS user and standard postgres DB for local macOS installations
+current_user = getpass.getuser()
+
 DATABASE_URL = os.getenv(
     "DATABASE_URL", 
-    "postgresql://postgres:postgres@localhost:5432/auto_apply"
+    f"postgresql://{current_user}@localhost:5432/postgres"
 )
 
 engine = create_engine(DATABASE_URL)
