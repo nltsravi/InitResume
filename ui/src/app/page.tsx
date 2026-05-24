@@ -102,6 +102,67 @@ export default function KanbanDashboard() {
   const [searchUrl, setSearchUrl] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
 
+  const [uploading, setUploading] = useState(false);
+  const [resumeStatus, setResumeStatus] = useState<any>(null);
+
+  const fetchResumeStatus = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/v1/resume-status`);
+      if (res.ok) {
+        const data = await res.json();
+        setResumeStatus(data);
+      }
+    } catch (err) {
+      console.error("Error fetching resume status:", err);
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      setStatusMessage("Only PDF files are accepted.");
+      setTimeout(() => setStatusMessage(''), 4000);
+      return;
+    }
+
+    const MAX_SIZE = 300 * 1024 * 1024;
+    if (file.size > MAX_SIZE) {
+      setStatusMessage("File size exceeds the 300MB limit.");
+      setTimeout(() => setStatusMessage(''), 4000);
+      return;
+    }
+
+    setUploading(true);
+    setStatusMessage("Uploading and analyzing master resume PDF...");
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/v1/upload-resume`, {
+        method: 'POST',
+        body: formData
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setStatusMessage("Resume uploaded, ingested into Vector DB, and analyzed successfully!");
+        setResumeStatus(data);
+      } else {
+        const errData = await res.json();
+        setStatusMessage(`Upload failed: ${errData.detail || "Unknown error"}`);
+      }
+    } catch (err) {
+      console.error("Upload error:", err);
+      setStatusMessage("Error connecting to backend API for upload.");
+    } finally {
+      setUploading(false);
+      setTimeout(() => setStatusMessage(''), 4500);
+    }
+  };
+
   // Kanban Column definitions
   const columns: JobCard['status'][] = [
     'Found',
@@ -128,6 +189,7 @@ export default function KanbanDashboard() {
 
   useEffect(() => {
     refreshApplications();
+    fetchResumeStatus();
   }, []);
 
   const getStatusColor = (status: JobCard['status']) => {
@@ -292,22 +354,109 @@ export default function KanbanDashboard() {
         </div>
       </header>
 
-      {/* Control Panel / Scraping trigger */}
-      <div className="max-w-7xl w-full mx-auto px-6 pt-6 space-y-4">
-        <div className="bg-slate-900/40 border border-slate-850 rounded-2xl p-5 backdrop-blur-sm flex flex-col md:flex-row items-center justify-between gap-4">
-          <div className="flex-1 w-full col-span-2">
-            <h3 className="text-sm font-semibold text-slate-300 mb-1">Trigger Autonomous Apply Flow</h3>
-            <p className="text-xs text-slate-500">Insert any Lever/Greenhouse posting URL to launch custom tailoring and apply agents.</p>
+      {/* Control Panel: 2-Column Grid */}
+      <div className="max-w-7xl w-full mx-auto px-6 pt-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        {/* Left Column: Master Resume Profile (5 cols) */}
+        <div className="lg:col-span-5 bg-slate-900/40 border border-slate-850 rounded-2xl p-5 backdrop-blur-sm flex flex-col justify-between space-y-4">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold text-slate-300 flex items-center gap-2">
+                <FileText className="w-4 h-4 text-indigo-400" />
+                Master Resume Profile
+              </h3>
+              {resumeStatus && resumeStatus.exists && (
+                <span className="text-[10px] bg-indigo-500/10 text-indigo-400 font-bold px-2 py-0.5 rounded-full border border-indigo-500/25">
+                  Vector DB Ingested
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-slate-500 mb-4">
+              Upload your master PDF resume. The system will parse it, chunk it, and index it into the vector database.
+            </p>
+
+            {/* Upload Area */}
+            <div className="relative">
+              <input
+                type="file"
+                accept=".pdf"
+                onChange={handleFileUpload}
+                disabled={uploading}
+                id="resume-upload"
+                className="hidden"
+              />
+              <label
+                htmlFor="resume-upload"
+                className={`flex flex-col items-center justify-center border border-dashed rounded-xl p-4 cursor-pointer transition-all ${
+                  uploading
+                    ? 'border-indigo-500/50 bg-indigo-950/5'
+                    : 'border-slate-800 hover:border-slate-700 bg-slate-950/40 hover:bg-slate-950/60'
+                }`}
+              >
+                {uploading ? (
+                  <div className="flex flex-col items-center py-2">
+                    <Loader2 className="w-6 h-6 text-indigo-500 animate-spin mb-2" />
+                    <span className="text-xs text-indigo-400 font-medium">Processing & Indexing Vector DB...</span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center py-2 text-center">
+                    <FileText className="w-6 h-6 text-slate-400 mb-2 group-hover:text-indigo-400" />
+                    <span className="text-xs text-slate-300 font-semibold mb-1">Click to Upload Resume</span>
+                    <span className="text-[10px] text-slate-500">PDF only, max 300MB</span>
+                  </div>
+                )}
+              </label>
+            </div>
+
+            {/* Profile Overview (parsed details) */}
+            {resumeStatus && resumeStatus.exists && resumeStatus.analysis && (
+              <div className="mt-4 p-3 bg-slate-950/60 border border-slate-900 rounded-xl space-y-2.5 animate-in fade-in duration-300">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-slate-400 font-medium">Candidate Name:</span>
+                  <span className="text-slate-200 font-semibold">{resumeStatus.analysis.name || "Ravishankar"}</span>
+                </div>
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-slate-400 font-medium">Experience:</span>
+                  <span className="text-slate-200 font-semibold">{resumeStatus.analysis.experience_years || "18+ years"}</span>
+                </div>
+                <div className="text-xs space-y-1">
+                  <span className="text-slate-400 font-medium">Top Extracted Skills:</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {resumeStatus.analysis.skills && resumeStatus.analysis.skills.map((skill: string) => (
+                      <span key={skill} className="text-[9px] bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded border border-slate-700/40">
+                        {skill}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                {resumeStatus.analysis.summary && (
+                  <div className="text-[10px] text-slate-400 italic bg-slate-900/20 p-2 rounded border border-slate-900/40 mt-1">
+                    "{resumeStatus.analysis.summary}"
+                  </div>
+                )}
+                <div className="text-[9px] text-slate-500 flex justify-between items-center border-t border-slate-900/60 pt-2">
+                  <span>File: {resumeStatus.filename || "resume.pdf"} ({typeof resumeStatus.size_bytes === 'number' ? (resumeStatus.size_bytes / (1024 * 1024)).toFixed(2) : "0.00"} MB)</span>
+                  {resumeStatus.last_modified && <span>Updated: {new Date(resumeStatus.last_modified).toLocaleDateString()}</span>}
+                </div>
+              </div>
+            )}
           </div>
-          <div className="flex w-full md:w-auto items-center gap-2 flex-1 flex-wrap md:flex-nowrap">
-            <form onSubmit={triggerSearchCrew} className="flex flex-1 items-center gap-2">
+        </div>
+
+        {/* Right Column: Autonomous Job Headhunting (7 cols) */}
+        <div className="lg:col-span-7 bg-slate-900/40 border border-slate-850 rounded-2xl p-5 backdrop-blur-sm flex flex-col justify-between space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-300 mb-1">Trigger Autonomous Apply Flow</h3>
+            <p className="text-xs text-slate-500 mb-4">Insert any Lever/Greenhouse posting URL to launch custom tailoring and apply agents.</p>
+            
+            <form onSubmit={triggerSearchCrew} className="flex items-center gap-2 mb-4">
               <input 
                 type="url"
                 required
                 value={searchUrl}
                 onChange={(e) => setSearchUrl(e.target.value)}
                 placeholder="https://jobs.lever.co/company/role"
-                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 transition-all min-w-[200px]"
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 transition-all"
               />
               <button
                 type="submit"
@@ -318,17 +467,26 @@ export default function KanbanDashboard() {
                 Launch
               </button>
             </form>
+          </div>
+
+          <div className="border-t border-slate-850 pt-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="text-xs text-slate-400">
+              Or automatically scan and search roles tailored to your master resume:
+            </div>
             <button
               type="button"
               onClick={handleLinkedInSearch}
-              disabled={searchingLinkedIn}
-              className="bg-sky-600 hover:bg-sky-500 text-white font-medium text-sm px-5 py-2.5 rounded-xl transition-all flex items-center gap-2 shrink-0 disabled:opacity-50 shadow-lg shadow-sky-600/10"
+              disabled={searchingLinkedIn || !resumeStatus?.exists}
+              title={!resumeStatus?.exists ? "Please upload a resume first" : ""}
+              className="w-full sm:w-auto bg-sky-600 hover:bg-sky-500 text-white font-medium text-sm px-5 py-2.5 rounded-xl transition-all flex items-center justify-center gap-2 shrink-0 disabled:opacity-50 shadow-lg shadow-sky-600/10"
             >
               {searchingLinkedIn ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
               Search LinkedIn (Resume)
             </button>
           </div>
         </div>
+
+      </div>
 
         {/* LinkedIn Search Results Panel */}
         {searchResults.length > 0 && (

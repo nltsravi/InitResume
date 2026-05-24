@@ -15,3 +15,4 @@ redis>=5.0.3
 python-dotenv>=1.0.1
 prometheus-client>=0.20.0
 pypdf>=4.2.0
+python-multipart>=0.0.9

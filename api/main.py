@@ -1,5 +1,8 @@
-from fastapi import FastAPI, BackgroundTasks, Depends, Response
+from fastapi import FastAPI, BackgroundTasks, Depends, Response, UploadFile, File
 from pydantic import BaseModel
+from pypdf import PdfReader
+from langchain_openai import ChatOpenAI
+from core.rag import ResumeRAGPipeline
 from sqlalchemy.orm import Session
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from langchain_community.callbacks import get_openai_callback
@@ -339,7 +342,6 @@ def extract_resume_keywords() -> str:
         print(f"[API] resume.pdf not found at: {resume_path}. Using fallback keywords.")
         return "Python, FastAPI, Playwright"
     try:
-        from pypdf import PdfReader
         print(f"[API] Loading resume.pdf for keyword extraction...")
         reader = PdfReader(resume_path)
         text = ""
@@ -349,7 +351,6 @@ def extract_resume_keywords() -> str:
             return "Python, FastAPI, Playwright"
         
         # Call ChatOpenAI to get keywords
-        from langchain_openai import ChatOpenAI
         llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
         prompt = f"Given the following resume text, extract the top 3-5 technical skills or keywords as a simple comma-separated list (e.g. 'Python, FastAPI, Kubernetes'):\n\n{text[:3000]}"
         response = llm.predict(prompt)
@@ -467,4 +468,203 @@ def submit_answer(app_id: int, qa: QuestionAnswer, db: Session = Depends(get_db)
     db.commit()
     print(f"[API] Application {app_id} custom answer submitted: {qa.answer}. Resumed and updated.")
     return {"status": "success", "message": "Answer submitted and application resumed"}
+
+
+@app.post("/api/v1/upload-resume")
+async def upload_resume(file: UploadFile = File(...)):
+    import json
+    import shutil
+    from fastapi.responses import JSONResponse
+
+    # 1. Validate PDF file type by extension
+    if not file.filename.lower().endswith('.pdf'):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Only PDF files are accepted. Please upload a PDF resume."}
+        )
+
+    # 2. Validate magic bytes (%PDF)
+    try:
+        header = await file.read(4)
+        file.file.seek(0)
+        if header != b'%PDF':
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Invalid file format. The file is not a valid PDF."}
+            )
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Failed to read file header: {str(e)}"}
+        )
+
+    # 3. Validate size limit (300MB = 314,572,800 bytes)
+    try:
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
+        
+        MAX_SIZE = 300 * 1024 * 1024
+        if file_size > MAX_SIZE:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": f"File size exceeds the 300MB limit. Current size: {file_size / (1024*1024):.2f}MB"}
+            )
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Failed to determine file size: {str(e)}"}
+        )
+
+    # 4. Save the file to target path
+    resume_path = "/Users/ravij/InitResume/resume.pdf"
+    os.makedirs(os.path.dirname(resume_path), exist_ok=True)
+    try:
+        with open(resume_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Failed to write file to disk: {str(e)}"}
+        )
+
+    # 5. Clear Chroma DB folder to prevent blending candidate resumes
+    pipeline = ResumeRAGPipeline()
+    if os.path.exists(pipeline.persist_directory):
+        try:
+            shutil.rmtree(pipeline.persist_directory)
+            print(f"[API] Removed existing Chroma DB directory: {pipeline.persist_directory}")
+        except Exception as e:
+            print(f"[API] Warning: Could not remove Chroma DB directory: {e}")
+
+    # 6. Ingest resume into Vector DB
+    try:
+        pipeline.ingest_resume(resume_path)
+    except Exception as e:
+        print(f"[API] Vector DB ingestion failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Resume saved but failed to ingest into Vector DB: {str(e)}"}
+        )
+
+    # 7. Analyze the resume with LLM and Cache Metadata
+    analysis_data = {
+        "name": "Ravishankar",
+        "experience_years": "18+ years",
+        "skills": ["Python", "FastAPI", "Playwright"],
+        "summary": "Master resume loaded successfully."
+    }
+
+    try:
+        reader = PdfReader(resume_path)
+        text = ""
+        for page in reader.pages[:3]:
+            text += page.extract_text() or ""
+
+        if text.strip():
+            llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+            analysis_prompt = f"""
+            Analyze the following candidate's resume text and extract key profile details.
+            
+            Resume Text:
+            {text[:4000]}
+            
+            Return a JSON object containing:
+            1. "name": The candidate's full name.
+            2. "experience_years": Estimated years of software engineering or total experience (e.g., "18+ years").
+            3. "skills": Top 8-10 key technical skills / tools extracted as a list of strings.
+            4. "summary": A 2-3 sentence overview of the candidate's professional background and architecture focus.
+            
+            Return ONLY a valid JSON object.
+            """
+            response = llm.predict(analysis_prompt)
+            start = response.find("{")
+            end = response.rfind("}") + 1
+            if start != -1 and end != -1:
+                extracted = json.loads(response[start:end])
+                # Validate keys exist
+                if "name" in extracted and "experience_years" in extracted:
+                    analysis_data = extracted
+    except Exception as e:
+        print(f"[API] LLM resume analysis failed: {e}. Using fallback.")
+
+    # Cache metadata to file
+    metadata_path = "/Users/ravij/InitResume/resume_metadata.json"
+    try:
+        with open(metadata_path, "w") as f:
+            json.dump({
+                "filename": file.filename,
+                "size_bytes": file_size,
+                "analysis": analysis_data
+            }, f, indent=4)
+    except Exception as e:
+        print(f"[API] Failed to write resume metadata file: {e}")
+
+    return {
+        "status": "success",
+        "message": "Resume uploaded, ingested into Vector DB, and analyzed successfully.",
+        "filename": file.filename,
+        "size_bytes": file_size,
+        "analysis": analysis_data
+    }
+
+
+@app.get("/api/v1/resume-status")
+def get_resume_status():
+    import json
+    resume_path = "/Users/ravij/InitResume/resume.pdf"
+    metadata_path = "/Users/ravij/InitResume/resume_metadata.json"
+
+    if not os.path.exists(resume_path):
+        return {"exists": False}
+
+    try:
+        stat = os.stat(resume_path)
+        file_size = stat.st_size
+        last_modified = datetime.fromtimestamp(stat.st_mtime).isoformat()
+    except Exception as e:
+        return {"exists": True, "error": f"Failed to get file stats: {str(e)}"}
+
+    # Try to load cached metadata
+    if os.path.exists(metadata_path):
+        try:
+            with open(metadata_path, "r") as f:
+                metadata = json.load(f)
+                if metadata.get("size_bytes") == file_size:
+                    return {
+                        "exists": True,
+                        "filename": metadata.get("filename", "resume.pdf"),
+                        "size_bytes": file_size,
+                        "last_modified": last_modified,
+                        "analysis": metadata.get("analysis")
+                    }
+        except Exception:
+            pass
+
+    # Fallback dynamic retrieval
+    try:
+        skills_str = extract_resume_keywords()
+        skills = [s.strip() for s in skills_str.split(",") if s.strip()]
+        
+        fallback_analysis = {
+            "name": "Ravishankar",
+            "experience_years": "18+ years",
+            "skills": skills,
+            "summary": "Master resume file exists on disk."
+        }
+        return {
+            "exists": True,
+            "filename": "resume.pdf",
+            "size_bytes": file_size,
+            "last_modified": last_modified,
+            "analysis": fallback_analysis
+        }
+    except Exception as e:
+        return {
+            "exists": True,
+            "filename": "resume.pdf",
+            "size_bytes": file_size,
+            "last_modified": last_modified,
+            "error": str(e)
+        }
 

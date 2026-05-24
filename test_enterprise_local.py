@@ -20,15 +20,10 @@ from api.main import app
 
 class TestEnterpriseEndpoints(unittest.TestCase):
     def setUp(self):
-        # Ensure clean state by removing test db if it exists
-        if os.path.exists("test_jobs.db"):
-            try:
-                os.remove("test_jobs.db")
-            except Exception:
-                pass
-                
-        # Create all tables in sqlite database
+        # Drop and recreate tables to ensure absolute isolation without breaking the connection pool
+        Base.metadata.drop_all(bind=engine)
         Base.metadata.create_all(bind=engine)
+        
         self.db = SessionLocal()
         self.client = TestClient(app)
 
@@ -54,11 +49,6 @@ class TestEnterpriseEndpoints(unittest.TestCase):
     def tearDown(self):
         self.db.close()
         engine.dispose()
-        if os.path.exists("test_jobs.db"):
-            try:
-                os.remove("test_jobs.db")
-            except Exception:
-                pass
 
     @patch('api.main.Crew.kickoff')
     def test_generate_referrals(self, mock_kickoff):
@@ -167,6 +157,102 @@ class TestEnterpriseEndpoints(unittest.TestCase):
         self.db.expire_all()
         app_in_db = self.db.query(Application).filter(Application.id == self.mock_application.id).first()
         self.assertEqual(app_in_db.status, "applied")
+
+    @patch('api.main.ResumeRAGPipeline')
+    @patch('api.main.ChatOpenAI')
+    @patch('api.main.PdfReader')
+    def test_upload_resume_success(self, mock_pdf_reader, mock_chat_openai, mock_rag_pipeline):
+        # Mocking PDF Reader to return some text
+        mock_pdf_reader.return_value.pages = [MagicMock()]
+        mock_pdf_reader.return_value.pages[0].extract_text.return_value = "Ravishankar is a principal engineer with 18+ years experience..."
+        
+        # Mocking ChatOpenAI predict method
+        mock_llm_instance = MagicMock()
+        mock_llm_instance.predict.return_value = '{"name": "Ravishankar", "experience_years": "18+ years", "skills": ["Python", "FastAPI"], "summary": "Experienced engineer."}'
+        mock_chat_openai.return_value = mock_llm_instance
+        
+        # Mocking resume upload file payload
+        file_content = b"%PDF-1.4\n%..."
+        
+        import io
+        response = self.client.post(
+            "/api/v1/upload-resume",
+            files={"file": ("resume.pdf", io.BytesIO(file_content), "application/pdf")}
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["filename"], "resume.pdf")
+        self.assertEqual(data["analysis"]["name"], "Ravishankar")
+        self.assertEqual(data["analysis"]["experience_years"], "18+ years")
+
+    def test_upload_resume_invalid_format(self):
+        import io
+        response = self.client.post(
+            "/api/v1/upload-resume",
+            files={"file": ("resume.txt", io.BytesIO(b"Not a PDF file"), "text/plain")}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Only PDF files are accepted", response.json()["detail"])
+
+    def test_upload_resume_invalid_magic_bytes(self):
+        import io
+        response = self.client.post(
+            "/api/v1/upload-resume",
+            files={"file": ("resume.pdf", io.BytesIO(b"Hello world PDF!"), "application/pdf")}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid file format", response.json()["detail"])
+
+    @patch('tempfile.SpooledTemporaryFile.tell')
+    def test_upload_resume_exceeds_size(self, mock_tell):
+        mock_tell.return_value = 301 * 1024 * 1024
+        import io
+        response = self.client.post(
+            "/api/v1/upload-resume",
+            files={"file": ("resume.pdf", io.BytesIO(b"%PDF-1.4\n%..."), "application/pdf")}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("exceeds the 300MB limit", response.json()["detail"])
+
+    @patch('os.path.exists')
+    @patch('os.stat')
+    def test_get_resume_status_not_exists(self, mock_stat, mock_exists):
+        mock_exists.return_value = False
+        response = self.client.get("/api/v1/resume-status")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"exists": False})
+
+    @patch('os.path.exists')
+    @patch('os.stat')
+    @patch('api.main.extract_resume_keywords')
+    def test_get_resume_status_exists_fallback(self, mock_keywords, mock_stat, mock_exists):
+        def side_effect(path):
+            if "resume.pdf" in path:
+                return True
+            return False
+        mock_exists.side_effect = side_effect
+        
+        mock_stat.return_value.st_size = 1024
+        mock_stat.return_value.st_mtime = 1716500000
+        
+        mock_keywords.return_value = "Python, FastAPI, AWS"
+        
+        response = self.client.get("/api/v1/resume-status")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["exists"])
+        self.assertEqual(data["filename"], "resume.pdf")
+        self.assertEqual(data["analysis"]["name"], "Ravishankar")
+        self.assertEqual(data["analysis"]["skills"], ["Python", "FastAPI", "AWS"])
+
+def tearDownModule():
+    # Clean up sqlite DB file after all tests finish
+    if os.path.exists("test_jobs.db"):
+        try:
+            os.remove("test_jobs.db")
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     unittest.main()

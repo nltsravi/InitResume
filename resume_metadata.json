@@ -1,0 +1,13 @@
+{
+    "filename": "resume.pdf",
+    "size_bytes": 13,
+    "analysis": {
+        "name": "Ravishankar",
+        "experience_years": "18+ years",
+        "skills": [
+            "Python",
+            "FastAPI"
+        ],
+        "summary": "Experienced engineer."
+    }
+}
